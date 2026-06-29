@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Secrets / local config
+.env
+.env.*
+
+# Runtime output dirs
+out/
+ocr_out/
+
+# OS
+.DS_Store
+Thumbs.db

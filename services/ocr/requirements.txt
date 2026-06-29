@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
+
+# Real model — install ONLY on the GPU box / Modal (set OCR_MOCK_MODEL=0):
+# torch
+# torchvision
+# transformers==4.57.1
+# einops
+# addict
+# easydict
+# pymupdf
