@@ -26,6 +26,7 @@ Flow: `upload → PDF→images → OCR (markdown + grounding boxes) → Gemini e
 | `apps/web/` | React + Vite frontend **[partner]**. |
 | `services/ocr/` | Unlimited-OCR HTTP service (`main.py` local/box, `modal_app.py` serverless). |
 | `tests/` | pytest suite (engine packs + API + OCR contract + verification). |
+| `bench/` | Audit-layer accuracy benchmark — labeled corpus + precision/recall/F1 scorecard (`python -m bench`). |
 
 ## Prerequisites
 
@@ -50,6 +51,11 @@ python -m hermes.demo_verify
 
 # Tests
 python -m pytest
+
+# Audit-layer benchmark (precision/recall/F1 on a labeled corpus)
+python -m bench                 # scorecard
+python -m bench --verbose       # + every case
+python -m bench --json          # machine-readable (CI/dashboards)
 
 # Backend orchestrator (mock OCR + mock extraction)
 python -m apps.api.smoketest            # end-to-end check
@@ -80,12 +86,17 @@ uvicorn services.ocr.main:app --port 8011
 | `OCR_MOCK_MODEL` | ocr | `1` | `0` loads the real model |
 | `OCR_MODEL_NAME` | ocr | `baidu/Unlimited-OCR` | |
 
+## Benchmark
+
+`python -m bench` scores the **audit layer** — the deterministic verdict that must never be wrong. It runs a hand-labeled corpus (`bench/corpus.py`) through every pack: a *clean* document per domain (nothing should flag) and the planted-error demo sample (a known defect set), plus isolated single-defect cases for the financial lead. Scoring is per-rule — **recall** = defects caught, **precision** = absence of false alarms — reported per pack and overall. It exits non-zero on any miss or false alarm, so it's also a CI gate (`tests/test_bench.py`). Extraction accuracy (OCR + LLM) is *not* measured here — that needs a GPU/key and a labeled OCR set; this isolates the arithmetic that backs the product claim.
+
 ## Add a domain pack
 
 1. New file `hermes/<domain>.py`: a Pydantic schema + rule functions `fn(doc) -> list[Finding]` + a `<DOMAIN>_RULE_PACK` list. Rules are pure arithmetic/logic.
 2. Run them with `run_pack(PACK, doc)`; format with `render_report(findings)`.
 3. Add `tests/test_<domain>.py` (planted sample flags expected · clean doc → 0 flags · single-error isolation).
 4. Export from `hermes/__init__.py`.
+5. Add a clean + defective `Case` to `bench/corpus.py` so the new pack is scored by the benchmark.
 
 See `hermes/financial.py` + `tests/test_financial.py` as the reference pattern.
 
