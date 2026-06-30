@@ -1,7 +1,7 @@
 # Hermes
 
 Long-horizon document intelligence: parse messy multi-page documents with **Unlimited-OCR**,
-extract typed data with **Claude**, then **audit** it with a deterministic rule engine. The
+extract typed data with **Gemini** (provider-pluggable), then **audit** it with a deterministic rule engine. The
 verdicts are arithmetic (code, not the LLM), so they can't hallucinate a number — the model only
 finds and explains; the engine decides.
 
@@ -12,17 +12,17 @@ finds and explains; the engine decides.
 
 ```
 React (Vercel) ──HTTPS──► FastAPI orchestrator (CPU host) ──HTTPS──► OCR service (GPU box / Modal)
-  apps/web                 apps/api  (jobs · Claude · hermes engine)   services/ocr  (Unlimited-OCR)
+  apps/web                 apps/api  (jobs · LLM extraction · hermes engine)   services/ocr  (Unlimited-OCR)
 ```
 
-Flow: `upload → PDF→images → OCR (markdown + grounding boxes) → Claude extraction (typed schema) → hermes audit → result → frontend polls`.
+Flow: `upload → PDF→images → OCR (markdown + grounding boxes) → Gemini extraction (typed schema) → hermes audit → result → frontend polls`.
 
 ## Repo layout
 
 | Path | What |
 |---|---|
 | `hermes/` | Verification engine. `core.py` (engine) + domain packs: `financial.py`, `bank.py`, `insurance.py`, `clinical.py`, `legal.py`, plus `registry.py` (verifiable-records core). Each pack has a `demo_*.py`. |
-| `apps/api/` | FastAPI orchestrator — async jobs, Claude extraction, audit + onboard + verify flows, cost guard. |
+| `apps/api/` | FastAPI orchestrator — async jobs, LLM extraction (Gemini), audit + onboard + verify flows, DB persistence, cost guard. |
 | `apps/web/` | React + Vite frontend **[partner]**. |
 | `services/ocr/` | Unlimited-OCR HTTP service (`main.py` local/box, `modal_app.py` serverless). |
 | `tests/` | pytest suite (engine packs + API + OCR contract + verification). |
@@ -32,7 +32,7 @@ Flow: `upload → PDF→images → OCR (markdown + grounding boxes) → Claude e
 Python 3.13. Install deps globally (no venv):
 
 ```
-pip install fastapi "uvicorn[standard]" python-multipart httpx anthropic pymupdf pytest
+pip install fastapi "uvicorn[standard]" python-multipart httpx google-genai sqlalchemy pymupdf pytest
 ```
 
 The GPU-only deps (torch, transformers, …) install on the GPU box / Modal — see `services/ocr/requirements.txt`.
@@ -63,16 +63,18 @@ uvicorn services.ocr.main:app --port 8011
 ### Full (non-mock) stack
 
 1. **OCR (GPU box):** `OCR_MOCK_MODEL=0 uvicorn services.ocr.main:app --port 8011` (loads Unlimited-OCR; expose via Cloudflare Tunnel for a stable URL). Deploy serverless with `modal deploy services/ocr/modal_app.py`.
-2. **API:** set `OCR_SERVICE_URL` (the OCR URL) and `ANTHROPIC_API_KEY`, then `uvicorn apps.api.main:app`. Mock modes switch off automatically once those are set.
+2. **API:** set `OCR_SERVICE_URL` (the OCR URL) and `GOOGLE_API_KEY` (Gemini), then `uvicorn apps.api.main:app`. Mock modes switch off automatically once those are set. For persistence, set `DATABASE_URL` to a Postgres URL (defaults to a local SQLite file).
 3. **Web:** `apps/web` with `VITE_API_URL` pointing at the API.
 
 ## Environment variables
 
 | var | where | default | effect |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | api | — | unset → mock extraction |
+| `GOOGLE_API_KEY` | api | — | Gemini key; unset → mock extraction |
+| `EXTRACTION_PROVIDER` | api | `gemini` | set `anthropic` to use Claude instead |
+| `GEMINI_MODEL` | api | `gemini-2.5-flash` | verify against your SDK |
 | `OCR_SERVICE_URL` | api | — | unset → mock OCR |
-| `CLAUDE_MODEL` | api | `claude-opus-4-8` | |
+| `DATABASE_URL` | api | `sqlite:///./hermes.db` | set `postgresql+psycopg://…` in prod |
 | `CORS_ORIGINS` | api | `*` | set to the Vercel origin in prod |
 | `RATE_LIMIT_PER_MIN` / `DAILY_JOB_CAP` | api | `5` / `200` | open-access cost guard |
 | `OCR_MOCK_MODEL` | ocr | `1` | `0` loads the real model |

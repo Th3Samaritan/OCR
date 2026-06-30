@@ -59,6 +59,8 @@ class VerifyResult:
     key: str
     message: str
     mismatches: list[tuple[str, str, str]] = field(default_factory=list)  # (field, presented, issued)
+    confidence: float = 1.0                              # 0..1 — how sure we are of the verdict
+    reasons: list[str] = field(default_factory=list)     # human-readable signals behind the verdict
 
     @property
     def genuine(self) -> bool:
@@ -83,6 +85,15 @@ class RecordStore:
     def get(self, issuer_id: str, doc_type: str, key: str) -> IssuerRecord | None:
         return self._by_key.get((issuer_id, doc_type, _canon(key)))
 
+    def records_for(self, issuer_id: str, doc_type: str) -> list[IssuerRecord]:
+        return [r for (iid, dt, _), r in self._by_key.items() if iid == issuer_id and dt == doc_type]
+
+
+def _holder_of(obj) -> str:
+    """Canonical holder name from a record or presented doc (fields['holder'] or holder_name)."""
+    fields = getattr(obj, "fields", {}) or {}
+    return _canon(fields.get("holder", "") or getattr(obj, "holder_name", ""))
+
 
 # --------------------------------------------------------------------------- #
 # The verify operation
@@ -92,13 +103,29 @@ def verify(store: RecordStore, doc: PresentedDocument) -> VerifyResult:
         return VerifyResult(
             VerifyStatus.UNVERIFIED, doc.issuer_id, doc.doc_type, doc.key,
             "issuer not onboarded — consistency-check only; authenticity cannot be confirmed",
+            confidence=0.0, reasons=["issuer not onboarded — cannot confirm authenticity"],
         )
 
     record = store.get(doc.issuer_id, doc.doc_type, doc.key)
     if record is None:
+        reasons = [f"no record with key {doc.key!r} at {doc.issuer_id}"]
+        confidence = 0.8
+        # Identity cross-check: does a record exist for this holder under a DIFFERENT key?
+        # That's the classic "real person, fabricated certificate number" forgery.
+        presented_holder = _holder_of(doc)
+        if presented_holder and hasattr(store, "records_for"):
+            for r in store.records_for(doc.issuer_id, doc.doc_type):
+                if _holder_of(r) and _holder_of(r) == presented_holder:
+                    reasons.append(
+                        f"a record exists for this holder under key {r.key!r}; the submitted "
+                        f"key was never issued — the certificate number appears fabricated"
+                    )
+                    confidence = 0.93
+                    break
         return VerifyResult(
             VerifyStatus.NOT_ISSUED, doc.issuer_id, doc.doc_type, doc.key,
             f"no '{doc.doc_type}' record with key {doc.key!r} was issued by {doc.issuer_id} — likely fake",
+            confidence=confidence, reasons=reasons,
         )
 
     mismatches: list[tuple[str, str, str]] = []
@@ -114,11 +141,14 @@ def verify(store: RecordStore, doc: PresentedDocument) -> VerifyResult:
         return VerifyResult(
             VerifyStatus.ALTERED, doc.issuer_id, doc.doc_type, doc.key,
             f"document does not match the issued record — {detail}", mismatches,
+            confidence=0.97,
+            reasons=[f"{n} differs from the issued record" for n, _, _ in mismatches],
         )
 
     return VerifyResult(
         VerifyStatus.CONFIRMED, doc.issuer_id, doc.doc_type, doc.key,
-        "matches the issuer's record",
+        "matches the issuer's record", confidence=1.0,
+        reasons=["key and all compared fields match the issuer record"],
     )
 
 

@@ -6,3 +6,4 @@ import os
 
 os.environ.setdefault("RATE_LIMIT_PER_MIN", "100000")
 os.environ.setdefault("DAILY_JOB_CAP", "1000000")
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")  # isolated, no file

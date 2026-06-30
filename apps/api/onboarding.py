@@ -75,24 +75,15 @@ def _extract_issuer_record(markdown: str, issuer_id: str, doc_type: str, filenam
         return IssuerRecord(issuer_id=issuer_id, doc_type=doc_type, key=key,
                             fields={"source_file": filename})
 
-    import anthropic  # lazy — real path only
+    # Real path: the configured provider (Gemini by default) fills key + fields;
+    # issuer_id/doc_type are forced to our values afterwards.
+    from .llm import extract
 
-    # NOTE: issuer_id/doc_type are forced to our values; Claude fills key + fields.
-    # (For strict structured outputs, model `fields` as a list of pairs upstream.)
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    resp = client.messages.parse(
-        model=settings.model,
-        max_tokens=2048,
-        messages=[{
-            "role": "user",
-            "content": (
-                "Extract this issued document into a record: the unique key (certificate/"
-                "reference number), holder name, issued date, and key fields.\n\n" + markdown
-            ),
-        }],
-        output_format=IssuerRecord,
+    prompt = (
+        "Extract this issued document into a record: the unique key (certificate/"
+        "reference number), holder name, issued date, and key fields.\n\n" + markdown
     )
-    record = resp.parsed_output
+    record = extract(prompt, IssuerRecord)
     record.issuer_id = issuer_id
     record.doc_type = doc_type
     return record

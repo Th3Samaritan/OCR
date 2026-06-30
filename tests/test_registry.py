@@ -52,3 +52,17 @@ def test_unknown_issuer_is_unverified():
 def test_genuine_property():
     assert verify(_store(), _doc()).genuine is True
     assert verify(_store(), _doc(key="nope")).genuine is False
+
+
+def test_fabricated_key_for_real_holder_is_flagged():
+    # holder Ada Obi exists under CSC/2019/0413; a different key for the same person = fabricated
+    r = verify(_store(), _doc(key="CSC/2099/9999"))
+    assert r.status is VerifyStatus.NOT_ISSUED
+    assert r.confidence >= 0.9
+    assert any("fabricated" in reason for reason in r.reasons)
+
+
+def test_confirmed_carries_confidence_and_reasons():
+    r = verify(_store(), _doc())
+    assert r.confidence == 1.0
+    assert r.reasons

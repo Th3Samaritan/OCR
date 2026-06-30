@@ -14,18 +14,26 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from pathlib import Path
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from hermes.registry import IssuerRecord, PresentedDocument, verify as verify_record
+from hermes.registry import IssuerRecord, PresentedDocument
 
 from .config import settings
 from .jobs import store
 from .onboarding import ingest_rows, ingest_scans
+from .integrity import analyze as analyze_integrity
+from .marking import mark_answer
+from .packs import DEFAULT_DOC_TYPE, PACKS
 from .pipeline import process_document
+from .tables import tables_as_json, tables_to_xlsx
 from .ratelimit import guard
-from .verification import result_to_dict, store as record_store, verify_file
+from .verification import run_verify, store as record_store, verify_file
 
 
 class BulkRecordsRequest(BaseModel):
@@ -41,6 +49,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Local test console (vanilla HTML, no build) — open http://localhost:8000/ui/
+_static_dir = Path(__file__).parent / "static"
+app.mount("/ui", StaticFiles(directory=str(_static_dir), html=True), name="ui")
+
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse("/ui/")
+
 
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
@@ -49,11 +66,11 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _run_job(job_id: str, data: bytes, filename: str) -> None:
+def _run_job(job_id: str, data: bytes, filename: str, doc_type: str) -> None:
     """Runs in Starlette's threadpool (sync background task)."""
     store.update(job_id, status="processing")
     try:
-        result = asyncio.run(process_document(data, filename))
+        result = asyncio.run(process_document(data, filename, doc_type))
         store.update(job_id, status="done", result=result)
     except Exception as exc:  # surface the message to the client, keep the server up
         store.update(job_id, status="error", error=str(exc))
@@ -65,7 +82,8 @@ def health() -> dict:
         "ok": True,
         "mock_ocr": settings.mock_ocr,
         "mock_extraction": settings.mock_extraction,
-        "model": settings.model,
+        "extraction_provider": settings.extraction_provider,
+        "model": settings.active_model,
     }
 
 
@@ -74,18 +92,45 @@ async def create_document(
     request: Request,
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    doc_type: str = Form(DEFAULT_DOC_TYPE),
 ) -> dict:
     allowed, message = guard.check(_client_ip(request))
     if not allowed:
         raise HTTPException(status_code=429, detail=message)
+    if doc_type not in PACKS:
+        raise HTTPException(status_code=400, detail=f"Unknown doc_type '{doc_type}'. Options: {', '.join(PACKS)}")
 
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
 
     job = store.create(file.filename or "upload")
-    background.add_task(_run_job, job.id, data, job.filename)
-    return {"job_id": job.id, "status": job.status}
+    background.add_task(_run_job, job.id, data, job.filename, doc_type)
+    return {"job_id": job.id, "status": job.status, "doc_type": doc_type}
+
+
+@app.get("/doc-types")
+def doc_types() -> dict:
+    return {"doc_types": [{"id": k, "label": p.label} for k, p in PACKS.items()]}
+
+
+@app.post("/mark")
+async def mark(
+    request: Request,
+    file: UploadFile = File(...),
+    question: str = Form(...),
+    marking_scheme: str = Form(""),
+    max_score: float = Form(10),
+) -> dict:
+    """Exam-marking assist (CBT platform calls this). Lecturer-assist: always a draft."""
+    allowed, message = guard.check(_client_ip(request))
+    if not allowed:
+        raise HTTPException(status_code=429, detail=message)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    result = mark_answer(data, file.filename or "answer", question, marking_scheme, max_score)
+    return result.model_dump()
 
 
 @app.get("/documents/{job_id}")
@@ -100,6 +145,30 @@ def get_document(job_id: str) -> dict:
         "result": job.result,
         "error": job.error,
     }
+
+
+def _job_markdown(job_id: str) -> str:
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if not job.result:
+        raise HTTPException(status_code=400, detail="Job has no result yet.")
+    return job.result.get("markdown", "")
+
+
+@app.get("/documents/{job_id}/tables")
+def document_tables(job_id: str) -> dict:
+    return {"tables": tables_as_json(_job_markdown(job_id))}
+
+
+@app.get("/documents/{job_id}/export.xlsx")
+def document_xlsx(job_id: str) -> Response:
+    data = tables_to_xlsx(_job_markdown(job_id))
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="hermes_{job_id}.xlsx"'},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -129,10 +198,22 @@ async def bulk_scans(
     return await ingest_scans(issuer_id, doc_type, payload)
 
 
+@app.post("/integrity")
+async def integrity(request: Request, file: UploadFile = File(...)) -> dict:
+    """Document-integrity / tamper check (provenance metadata + ELA). Works with no GPU/key."""
+    allowed, message = guard.check(_client_ip(request))
+    if not allowed:
+        raise HTTPException(status_code=429, detail=message)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    return analyze_integrity(data, file.filename or "").to_dict()
+
+
 @app.post("/verify/presented")
 def verify_presented(doc: PresentedDocument) -> dict:
     """Verify an already-structured document (Pull flow / integrations)."""
-    return result_to_dict(verify_record(record_store, doc))
+    return run_verify(doc)
 
 
 @app.post("/verify")
@@ -151,5 +232,4 @@ async def verify_upload(
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
 
-    result = await verify_file(data, file.filename or "upload", issuer_id, doc_type)
-    return result_to_dict(result)
+    return await verify_file(data, file.filename or "upload", issuer_id, doc_type)
