@@ -17,9 +17,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        # Install from the API requirements file (single source of truth) so CI
+        # can't drift from the real dependency set. pytest is the only dev-only
+        # extra. The OCR service's mock path needs no GPU deps.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest fastapi "uvicorn[standard]" python-multipart httpx pydantic anthropic pymupdf
+          pip install -r apps/api/requirements.txt pytest
 
       - name: Run tests
         run: python -m pytest -q
