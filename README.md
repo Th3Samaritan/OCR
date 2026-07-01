@@ -23,7 +23,7 @@ Flow: `upload → PDF→images → OCR (markdown + grounding boxes) → Gemini e
 |---|---|
 | `hermes/` | Verification engine. `core.py` (engine) + domain packs: `financial.py`, `bank.py`, `insurance.py`, `clinical.py`, `legal.py`, plus `registry.py` (verifiable-records core). Each pack has a `demo_*.py`. |
 | `apps/api/` | FastAPI orchestrator — async jobs, LLM extraction (Gemini), audit + onboard + verify flows, DB persistence, cost guard. |
-| `apps/web/` | React + Vite frontend **[partner]**. |
+| `apps/web/` | React + Vite + TypeScript + Tailwind frontend (audit, verification, onboarding, dashboard). See `apps/web/README.md`. |
 | `services/ocr/` | Unlimited-OCR HTTP service (`main.py` local/box, `modal_app.py` serverless). |
 | `tests/` | pytest suite (engine packs + API + OCR contract + verification). |
 | `bench/` | Audit-layer accuracy benchmark — labeled corpus + precision/recall/F1 scorecard (`python -m bench`). |
